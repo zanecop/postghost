@@ -1,6 +1,8 @@
 # POSTGhost
 ASP.NET Core Service that records requests for security testing.
 
+This tool is for security research only!  The service will record any calls made to it for analysis and security research.
+
 Steps:
 
 - Get an Azure Storage account and an Azure KeyVault
