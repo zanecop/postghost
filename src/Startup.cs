@@ -1,19 +1,13 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Linq;
-using System.Reflection.Metadata;
-using System.Threading.Tasks;
+using Azure.Identity;
 using Azure.Storage.Blobs;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.HttpsPolicy;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 
 namespace PostGhost
@@ -22,11 +16,32 @@ namespace PostGhost
     {
         private string sasToken = string.Empty;
 
+        private bool sasMode;
+
+        private string storageAccount = string.Empty;
+        
+        private bool msiMode;
+
         public Startup(IConfiguration configuration)
         {
             Configuration = configuration;
 
             sasToken = Configuration["sasToken"];
+            
+            storageAccount = Configuration["storageAccount"];
+
+            if (sasToken != null)
+            {
+                sasMode = true;
+            }
+            else if (storageAccount != null)
+            {
+                msiMode = true;
+            }
+            else
+            {
+                throw new Exception("Startup Failed!  No SAS token or Storage Account Details!");
+            }
         }
 
         public IConfiguration Configuration { get; }
@@ -82,23 +97,70 @@ namespace PostGhost
         {
             PostGhostHit ghostHit = new PostGhostHit(context);
 
-            BlobClient client = new BlobClient(sasToken, "requests", $"{DateTime.UtcNow.ToString("yy-MM-dd-hh-mm-ss")}-{ghostHit.HitGuid}.txt");
+            string requestName = $"{DateTime.UtcNow.ToString("yy-MM-dd-hh-mm-ss")}-{ghostHit.HitGuid}.txt";
 
-            client.Upload(new MemoryStream(System.Text.Encoding.ASCII.GetBytes(ghostHit.ToString())));
-
-            if(context.Request.ContentLength != null)
             try
             {
-                BlobClient fileUploadClient = new BlobClient(sasToken, "bodys", $"{ghostHit.HitGuid}.txt");
-                var body = new StreamReader(context.Request.Body).ReadToEndAsync().Result;
-                fileUploadClient.Upload(new MemoryStream(System.Text.Encoding.ASCII.GetBytes(body)));
+
             }
-            catch(Exception ex)
+            catch (Exception)
             {
+            }
+
+            if (sasMode)
+            {
+                BlobClient client = new BlobClient(sasToken, "requests", requestName);
+
+                UploadContextData(client, ghostHit);
+
+                if (context.Request.ContentLength != null)
+                {
+                    BlobClient fileUploadClient = new BlobClient(sasToken, "bodys", $"{ghostHit.HitGuid}.txt");
+
+                    UploadContextFileData(fileUploadClient, context);
+                }
+            }
+            else if (msiMode)
+            {
+                BlobServiceClient serviceClient = new BlobServiceClient(
+                    new Uri($"https://{storageAccount}.blob.core.windows.net"),
+                    new ManagedIdentityCredential());
+
+                BlobContainerClient containerClient = serviceClient.GetBlobContainerClient("requests");
+
+                BlobClient client = containerClient.GetBlobClient(requestName);
+
+                UploadContextData(client, ghostHit);
+
+                if (context.Request.ContentLength != null)
+                {
+                    BlobContainerClient bodysContainerClient = serviceClient.GetBlobContainerClient("bodys");
+
+                    BlobClient fileUploadClient = bodysContainerClient.GetBlobClient($"{ghostHit.HitGuid}.txt");
+
+                    UploadContextFileData(fileUploadClient, context);
+                }
+            }
+            else
+            {
+                // We should never get here...
+                throw new Exception("Handling Failed!  No SAS token or Storage Account Details!");
             }
 
             System.Diagnostics.Debug.Write("Upload Completed!");
         }
+
+        public void UploadContextData(BlobClient client, PostGhostHit ghostHit)
+        {
+            client.Upload(new MemoryStream(System.Text.Encoding.ASCII.GetBytes(ghostHit.ToString())));
+        }
+
+        public void UploadContextFileData(BlobClient fileUploadClient, HttpContext context)
+        {
+            var body = new StreamReader(context.Request.Body).ReadToEndAsync().Result;
+            fileUploadClient.Upload(new MemoryStream(System.Text.Encoding.ASCII.GetBytes(body)));
+        }
+
     }
 
     public class PostGhostHit
